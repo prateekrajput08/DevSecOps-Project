@@ -5,8 +5,11 @@
 /.pnp
 .pnp.js
 
-# env
+# env files (keep templates reviewable)
 .env
+.env.*
+!.env.example
+!.env.sample
 
 # testing
 /coverage
@@ -23,6 +26,9 @@
 .env.production.local
 
 npm-debug.log*
-yarn.lock
 yarn-debug.log*
 yarn-error.log*
+*.log
+
+# Vite cache
+.vite/

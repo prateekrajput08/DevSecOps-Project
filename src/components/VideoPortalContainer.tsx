@@ -12,7 +12,7 @@ import {
 import { usePortalData } from "src/providers/PortalProvider";
 
 export default function VideoPortalContainer() {
-  const { miniModalMediaData, anchorElement } = usePortalData();
+  const { miniModalMediaData, anchorElement, mediaType } = usePortalData();
   const container = useRef(null);
   const rect = anchorElement?.getBoundingClientRect();
 
@@ -43,6 +43,7 @@ export default function VideoPortalContainer() {
           <VideoCardPortal
             video={miniModalMediaData}
             anchorElement={anchorElement}
+            mediaType={mediaType}
           />
         </Portal>
       )}

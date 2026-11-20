@@ -8,12 +8,9 @@ const PlayerControlButton = forwardRef<HTMLButtonElement, IconButtonProps>(
       ref={ref}
       sx={{
         padding: { xs: 0.5, sm: 1 },
-        "& svg, & span": { transition: "transform .3s" },
-        "&:hover svg, &:hover span": {
-          msTransform: "scale(1.3)",
-          WebkitTransform: "scale(1.3)",
-          transform: "scale(1.3)",
-        },
+        transform: "none !important",
+        "&:hover, &:focus": { transform: "none !important" },
+        "& svg, & span": { transition: "none", transform: "none !important" },
       }}
       {...others}
     >

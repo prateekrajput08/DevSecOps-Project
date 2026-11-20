@@ -1,24 +1,31 @@
 import Stack from "@mui/material/Stack";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
+import CardActionArea from "@mui/material/CardActionArea";
 import Typography from "@mui/material/Typography";
-import AddIcon from "@mui/icons-material/Add";
 import { Movie } from "src/types/Movie";
-import NetflixIconButton from "./NetflixIconButton";
 import MaxLineTypography from "./MaxLineTypography";
 import { formatMinuteToReadable, getRandomNumber } from "src/utils/common";
 import AgeLimitChip from "./AgeLimitChip";
 import { useGetConfigurationQuery } from "src/store/slices/configuration";
+import { useDetailModal } from "src/providers/DetailModalProvider";
+import { MEDIA_TYPE } from "src/types/Common";
 
 interface SimilarVideoCardProps {
   video: Movie;
+  mediaType: MEDIA_TYPE;
 }
 
-export default function SimilarVideoCard({ video }: SimilarVideoCardProps) {
+export default function SimilarVideoCard({ video, mediaType }: SimilarVideoCardProps) {
   const { data: configuration } = useGetConfigurationQuery(undefined);
+  const { setDetailType } = useDetailModal();
 
   return (
     <Card>
+      <CardActionArea
+        aria-label={`Show details for ${video.title || video.original_title}`}
+        onClick={() => setDetailType({ mediaType, id: video.id })}
+      >
       <div
         style={{
           width: "100%",
@@ -80,16 +87,13 @@ export default function SimilarVideoCard({ video }: SimilarVideoCardProps) {
                 </Typography>
               </Stack>
             </div>
-            <div style={{ flexGrow: 1 }} />
-            <NetflixIconButton>
-              <AddIcon />
-            </NetflixIconButton>
           </Stack>
           <MaxLineTypography maxLine={4} variant="subtitle2">
             {video.overview}
           </MaxLineTypography>
         </Stack>
       </CardContent>
+      </CardActionArea>
     </Card>
   );
 }

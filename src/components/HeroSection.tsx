@@ -11,19 +11,32 @@ import PlayButton from "./PlayButton";
 import MoreInfoButton from "./MoreInfoButton";
 import NetflixIconButton from "./NetflixIconButton";
 import MaturityRate from "./MaturityRate";
-import useOffSetTop from "src/hooks/useOffSetTop";
+import useIntersectionObserver from "src/hooks/useIntersectionObserver";
 import { useDetailModal } from "src/providers/DetailModalProvider";
 import { MEDIA_TYPE } from "src/types/Common";
 import {
   useGetVideosByMediaTypeAndCustomGenreQuery,
   useLazyGetAppendedVideosQuery,
 } from "src/store/slices/discover";
-import { Movie } from "src/types/Movie";
+import { MovieDetail } from "src/types/Movie";
 import VideoJSPlayer from "./watch/VideoJSPlayer";
+import { motion } from "framer-motion";
 
 interface TopTrailerProps {
   mediaType: MEDIA_TYPE;
 }
+
+type HeroDetail = MovieDetail & {
+  name?: string;
+  first_air_date?: string;
+  episode_run_time?: number[];
+  release_dates?: {
+    results: { iso_3166_1: string; release_dates: { certification: string }[] }[];
+  };
+  content_ratings?: {
+    results: { iso_3166_1: string; rating: string }[];
+  };
+};
 
 export default function TopTrailer({ mediaType }: TopTrailerProps) {
   const { data } = useGetVideosByMediaTypeAndCustomGenreQuery({
@@ -32,45 +45,120 @@ export default function TopTrailer({ mediaType }: TopTrailerProps) {
     page: 1,
   });
   const [getVideoDetail, { data: detail }] = useLazyGetAppendedVideosQuery();
-  const [video, setVideo] = useState<Movie | null>(null);
+  const [videoIndex, setVideoIndex] = useState(-1);
   const [muted, setMuted] = useState(true);
+  const [showDetails, setShowDetails] = useState(true);
   const playerRef = useRef<Player | null>(null);
-  const isOffset = useOffSetTop(window.innerWidth * 0.5625);
-  const { setDetailType } = useDetailModal();
-  const maturityRate = useMemo(() => {
-    return getRandomNumber(20);
+  const heroRef = useRef<HTMLDivElement>(null);
+  const heroIntersection = useIntersectionObserver(heroRef, { threshold: 0.1 });
+  const { detail: openedDetail, setDetailType } = useDetailModal();
+  const videos = useMemo(
+    () => data?.results.filter((item) => !!item.backdrop_path) ?? [],
+    [data]
+  );
+  const video = videos[videoIndex] ?? null;
+  const heroDetail =
+    video && detail?.id === video.id ? (detail as HeroDetail) : undefined;
+  const trailerVideos = heroDetail?.videos.results.filter(
+    (item) =>
+      item.site === "YouTube" &&
+      ["en", "hi"].includes(item.iso_639_1) &&
+      ["Trailer", "Teaser"].includes(item.type)
+  );
+  const preferredTrailerLanguage =
+    heroDetail?.original_language === "hi" ? "hi" : "en";
+  const trailer =
+    trailerVideos?.find(
+      (item) =>
+        item.iso_639_1 === preferredTrailerLanguage &&
+        item.type === "Trailer" &&
+        item.official
+    ) ??
+    trailerVideos?.find(
+      (item) =>
+        item.iso_639_1 === preferredTrailerLanguage && item.type === "Trailer"
+    ) ??
+    trailerVideos?.find(
+      (item) =>
+        item.iso_639_1 === preferredTrailerLanguage && item.type === "Teaser"
+    ) ??
+    trailerVideos?.find((item) => item.type === "Trailer" && item.official) ??
+    trailerVideos?.find((item) => item.type === "Trailer") ??
+    trailerVideos?.find((item) => item.type === "Teaser");
+  const title =
+    heroDetail?.title ?? heroDetail?.name ?? video?.title ?? video?.original_title;
+  const certifications =
+    mediaType === MEDIA_TYPE.Movie
+      ? heroDetail?.release_dates?.results.flatMap((country) =>
+          country.release_dates.map((release) => ({
+            country: country.iso_3166_1,
+            value: release.certification,
+          }))
+        )
+      : heroDetail?.content_ratings?.results.map((rating) => ({
+          country: rating.iso_3166_1,
+          value: rating.rating,
+        }));
+  const ageRating =
+    certifications?.find((rating) => rating.country === "IN" && rating.value)
+      ?.value ??
+    certifications?.find((rating) => rating.country === "US" && rating.value)
+      ?.value ??
+    certifications?.find((rating) => rating.value)?.value ??
+    (heroDetail?.adult ? "18+" : "NR");
+  const languages = heroDetail?.spoken_languages
+    .map((language) => language.english_name || language.name)
+    .filter(Boolean);
+
+  useEffect(() => {
+    let hideTimer: number;
+    const revealDetails = () => {
+      setShowDetails(true);
+      window.clearTimeout(hideTimer);
+      hideTimer = window.setTimeout(() => setShowDetails(false), 5000);
+    };
+    revealDetails();
+    window.addEventListener("pointermove", revealDetails);
+    window.addEventListener("keydown", revealDetails);
+    window.addEventListener("touchstart", revealDetails);
+    return () => {
+      window.clearTimeout(hideTimer);
+      window.removeEventListener("pointermove", revealDetails);
+      window.removeEventListener("keydown", revealDetails);
+      window.removeEventListener("touchstart", revealDetails);
+    };
   }, []);
 
   const handleReady = useCallback((player: Player) => {
     playerRef.current = player;
-  }, []);
+    if (heroIntersection?.isIntersecting && !openedDetail.id) player.play();
+    else player.pause();
+  }, [heroIntersection?.isIntersecting, openedDetail.id]);
 
   useEffect(() => {
-    if (playerRef.current) {
-      if (isOffset) {
-        playerRef.current.pause();
-      } else {
-        if (playerRef.current.paused()) {
-          playerRef.current.play();
-        }
-      }
+    const player = playerRef.current;
+    if (!player) return;
+    if (heroIntersection?.isIntersecting && !openedDetail.id) {
+      if (player.paused()) player.play();
+    } else {
+      player.pause();
     }
-  }, [isOffset]);
+  }, [heroIntersection?.isIntersecting, openedDetail.id]);
 
   useEffect(() => {
-    if (data && data.results) {
-      const videos = data.results.filter((item) => !!item.backdrop_path);
-      setVideo(videos[getRandomNumber(videos.length)]);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data]);
+    if (videos.length) setVideoIndex(getRandomNumber(videos.length));
+  }, [videos]);
 
   useEffect(() => {
     if (video) {
       getVideoDetail({ mediaType, id: video.id });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [video]);
+  }, [video?.id]);
+
+  const handleTrailerEnded = useCallback(() => {
+    setVideoIndex((index) => (index + 1) % videos.length);
+  }, [videos.length]);
 
   const handleMute = useCallback((status: boolean) => {
     if (playerRef.current) {
@@ -80,11 +168,11 @@ export default function TopTrailer({ mediaType }: TopTrailerProps) {
   }, []);
 
   return (
-    <Box sx={{ position: "relative", zIndex: 1 }}>
+    <Box ref={heroRef} sx={{ position: "relative", zIndex: 1 }}>
       <Box
         sx={{
           mb: 3,
-          pb: "40%",
+          pb: "56.25%",
           top: 0,
           left: 0,
           right: 0,
@@ -109,12 +197,13 @@ export default function TopTrailer({ mediaType }: TopTrailerProps) {
                   position: "absolute",
                 }}
               >
-                {detail && (
+                {heroDetail && trailer && (
                   <VideoJSPlayer
+                    key={video.id}
                     options={{
-                      loop: true,
+                      loop: false,
                       muted: true,
-                      autoplay: true,
+                      autoplay: false,
                       controls: false,
                       responsive: true,
                       fluid: true,
@@ -123,12 +212,15 @@ export default function TopTrailer({ mediaType }: TopTrailerProps) {
                         {
                           type: "video/youtube",
                           src: `https://www.youtube.com/watch?v=${
-                            detail.videos.results[0]?.key || "L3oOldViIgY"
+                            trailer.key
                           }`,
                         },
                       ],
                     }}
-                    onReady={handleReady}
+                    onReady={(player) => {
+                      handleReady(player);
+                      player.one("ended", handleTrailerEnded);
+                    }}
                   />
                 )}
                 <Box
@@ -176,7 +268,7 @@ export default function TopTrailer({ mediaType }: TopTrailerProps) {
                   >
                     {!muted ? <VolumeUpIcon /> : <VolumeOffIcon />}
                   </NetflixIconButton>
-                  <MaturityRate>{`${maturityRate}+`}</MaturityRate>
+                  <MaturityRate>{ageRating}</MaturityRate>
                 </Stack>
               </Box>
 
@@ -192,33 +284,86 @@ export default function TopTrailer({ mediaType }: TopTrailerProps) {
                 }}
               >
                 <Stack
-                  spacing={4}
+                  spacing={{ xs: 2, md: 3 }}
+                  component={motion.div}
+                  initial={{ opacity: 0, y: 18 }}
+                  animate={{
+                    opacity: showDetails ? 1 : 0,
+                    y: showDetails ? 0 : 8,
+                  }}
+                  transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
                   sx={{
-                    bottom: "35%",
+                    bottom: { xs: "24%", md: "20%" },
                     position: "absolute",
                     left: { xs: "4%", md: "60px" },
-                    top: 0,
-                    width: "36%",
+                    width: { xs: "88%", sm: "60%", md: "42%", lg: "36%" },
+                    maxWidth: 620,
                     zIndex: 10,
                     justifyContent: "flex-end",
+                    pointerEvents: showDetails ? "auto" : "none",
+                    transition: "opacity .35s ease",
                   }}
                 >
                   <MaxLineTypography
                     variant="h2"
                     maxLine={1}
                     color="text.primary"
+                    sx={{
+                      fontSize: "clamp(1.8rem, 3.2vw, 3.4rem)",
+                      fontWeight: 600,
+                    }}
                   >
-                    {video.title}
+                    {title}
                   </MaxLineTypography>
                   <MaxLineTypography
                     variant="h5"
                     maxLine={3}
                     color="text.primary"
+                    sx={{
+                      fontSize: "clamp(.9rem, 1.15vw, 1.15rem)",
+                      fontWeight: 400,
+                      lineHeight: 1.45,
+                    }}
                   >
-                    {video.overview}
+                    {heroDetail?.overview ?? video.overview}
                   </MaxLineTypography>
-                  <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-                    <PlayButton size="large" />
+                  <Stack
+                    direction="row"
+                    spacing={1.5}
+                    sx={{
+                      color: "rgba(255,255,255,.9)",
+                      fontFamily: "'Space Grotesk', sans-serif",
+                      fontSize: 14,
+                      flexWrap: "wrap",
+                      rowGap: 0.5,
+                    }}
+                  >
+                    <span>Audio: {languages?.join(", ") || "Not listed"}</span>
+                    <span>Age: {ageRating}</span>
+                    {!!heroDetail?.vote_average && (
+                      <span>TMDB ★ {heroDetail.vote_average.toFixed(1)}/10</span>
+                    )}
+                    <span>
+                      {heroDetail?.spoken_languages?.length
+                        ? `Original: ${heroDetail.original_language.toUpperCase()}`
+                        : ""}
+                    </span>
+                  </Stack>
+                  <Stack
+                    direction="row"
+                    spacing={{ xs: 1, sm: 2 }}
+                    sx={{ flexWrap: "wrap" }}
+                  >
+                    <PlayButton
+                      size="large"
+                      mediaType={mediaType}
+                      videoId={video.id}
+                      sx={{
+                        bgcolor: "#fff",
+                        color: "#111",
+                        "&:hover": { bgcolor: "#e6e6e6" },
+                      }}
+                    />
                     <MoreInfoButton
                       size="large"
                       onClick={() => {

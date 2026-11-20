@@ -14,16 +14,14 @@ const StyledSlider = styled(Slider)({
     backgroundColor: "white !important",
     opacity: 0.85,
   },
-  "& .NetflixSlider-thumb": {
+    "& .NetflixSlider-thumb": {
     borderRadius: "50%",
     height: 10,
     width: 10,
     backgroundColor: "red",
-    "&:focus, &:hover, &.Netflix-active, &.Netflix-focusVisible": {
-      boxShadow: "inherit",
-      height: 15,
-      width: 15,
-    },
+      "&:focus, &:hover, &.Netflix-active, &.Netflix-focusVisible": {
+        boxShadow: "inherit",
+      },
     "&:before": {
       display: "none",
       boxShadow: "0 2px 2px 0 #fff",

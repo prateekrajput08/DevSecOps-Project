@@ -3,12 +3,12 @@ const IN = { scale: 1, opacity: 1 };
 const OUT = { scale: 0, opacity: 0 };
 
 const TRANSITION_ENTER = {
-  duration: 1,
+  duration: 0.32,
   ease: [0.43, 0.13, 0.23, 0.96],
 };
 
 const TRANSITION_EXIT = {
-  duration: 1,
+  duration: 0.24,
   ease: [0.43, 0.13, 0.23, 0.96],
 };
 

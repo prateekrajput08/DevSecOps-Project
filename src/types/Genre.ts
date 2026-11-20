@@ -7,4 +7,6 @@ export type CustomGenre = {
   id?: number;
   name: string;
   apiString: string;
+  companyId?: number;
+  collectionId?: number;
 };

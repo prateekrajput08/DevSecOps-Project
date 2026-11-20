@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useState, useCallback } from "react";
+import { ReactNode, useEffect, useState, useCallback, useRef } from "react";
 import { useLocation } from "react-router-dom";
 
 import { INITIAL_DETAIL_STATE } from "src/constant";
@@ -12,7 +12,7 @@ interface DetailType {
   mediaType?: MEDIA_TYPE;
 }
 export interface DetailModalConsumerProps {
-  detail: { mediaDetail?: MovieDetail } & DetailType;
+  detail: { mediaDetail?: MovieDetail; loading?: boolean; error?: boolean } & DetailType;
   setDetailType: (newDetailType: DetailType) => void;
 }
 
@@ -26,20 +26,32 @@ export default function DetailModalProvider({
 }) {
   const location = useLocation();
   const [detail, setDetail] = useState<
-    { mediaDetail?: MovieDetail } & DetailType
+    { mediaDetail?: MovieDetail; loading?: boolean; error?: boolean } & DetailType
   >(INITIAL_DETAIL_STATE);
 
   const [getAppendedVideos] = useLazyGetAppendedVideosQuery();
+  const requestId = useRef(0);
 
   const handleChangeDetail = useCallback(
     async (newDetailType: { mediaType?: MEDIA_TYPE; id?: number }) => {
       if (!!newDetailType.id && newDetailType.mediaType) {
-        const response = await getAppendedVideos({
-          mediaType: newDetailType.mediaType,
-          id: newDetailType.id as number,
-        }).unwrap();
-        setDetail({ ...newDetailType, mediaDetail: response });
+        const currentRequest = ++requestId.current;
+        setDetail({ ...newDetailType, loading: true });
+        try {
+          const response = await getAppendedVideos({
+            mediaType: newDetailType.mediaType,
+            id: newDetailType.id,
+          }).unwrap();
+          if (currentRequest === requestId.current) {
+            setDetail({ ...newDetailType, mediaDetail: response });
+          }
+        } catch {
+          if (currentRequest === requestId.current) {
+            setDetail({ ...newDetailType, error: true });
+          }
+        }
       } else {
+        requestId.current += 1;
         setDetail(INITIAL_DETAIL_STATE);
       }
     },
@@ -47,6 +59,7 @@ export default function DetailModalProvider({
   );
 
   useEffect(() => {
+    requestId.current += 1;
     setDetail(INITIAL_DETAIL_STATE);
   }, [location.pathname, setDetail]);
 

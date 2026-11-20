@@ -16,6 +16,10 @@ export const COMMON_TITLES: CustomGenre[] = [
   { name: "Top Rated", apiString: "top_rated" },
   { name: "Now Playing", apiString: "now_playing" },
   { name: "Upcoming", apiString: "upcoming" },
+  { name: "Marvel Studios", apiString: "marvel_studios", companyId: 420 },
+  { name: "DC Studios", apiString: "dc_studios", companyId: 9993 },
+  { name: "X-Men Studios", apiString: "x_men", collectionId: 748 },
+  { name: "Harry Potter", apiString: "harry_potter", collectionId: 1241 },
 ];
 
 export const YOUTUBE_URL = "https://www.youtube.com/watch?v=";

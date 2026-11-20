@@ -21,7 +21,7 @@ export default function MainLayout() {
         bgcolor: "background.default",
       }}
     >
-      <MainHeader />
+      {location.pathname !== `/${MAIN_PATH.watch}` && <MainHeader />}
       {navigation.state !== "idle" && <MainLoadingScreen />}
       <DetailModalProvider>
         <DetailModal />

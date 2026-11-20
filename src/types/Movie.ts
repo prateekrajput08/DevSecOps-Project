@@ -39,6 +39,15 @@ export type MovieDetail = {
   title: string;
   video: boolean;
   videos: { results: Appended_Video[] };
+  credits?: {
+    cast: {
+      id: number;
+      name: string;
+      character: string;
+      profile_path: string | null;
+      order: number;
+    }[];
+  };
   vote_average: number;
   vote_count: number;
 };

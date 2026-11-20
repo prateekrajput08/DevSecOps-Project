@@ -1,6 +1,9 @@
-import { useState, useRef } from "react";
+import { FormEvent, useState, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { styled } from "@mui/material/styles";
+import Box from "@mui/material/Box";
 import InputBase from "@mui/material/InputBase";
+import IconButton from "@mui/material/IconButton";
 import SearchIcon from "@mui/icons-material/Search";
 
 const Search = styled("div")(({ theme }) => ({
@@ -8,15 +11,6 @@ const Search = styled("div")(({ theme }) => ({
   width: "100%",
   display: "flex",
   alignItems: "center",
-}));
-
-const SearchIconWrapper = styled("div")(({ theme }) => ({
-  cursor: "pointer",
-  padding: theme.spacing(0, 1),
-  height: "100%",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
 }));
 
 const StyledInputBase = styled(InputBase)(({ theme }) => ({
@@ -35,36 +29,69 @@ const StyledInputBase = styled(InputBase)(({ theme }) => ({
 
 export default function SearchBox() {
   const [isFocused, setIsFocused] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement>();
+  const [query, setQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const navigate = useNavigate();
 
-  const handleClickSearchIcon = () => {
-    if (!isFocused) {
+  const handleSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    if (query.trim()) {
+      navigate(`/search?query=${encodeURIComponent(query.trim())}`);
+      searchInputRef.current?.blur();
+    } else {
       searchInputRef.current?.focus();
     }
   };
 
   return (
-    <Search
-      sx={
-        isFocused ? { border: "1px solid white", backgroundColor: "black" } : {}
-      }
+    <Box
+      component="form"
+      onSubmit={handleSubmit}
+      sx={{ width: isFocused ? { xs: 190, sm: 270 } : 40 }}
     >
-      <SearchIconWrapper onClick={handleClickSearchIcon}>
+      <Search
+        sx={{
+        border: isFocused ? "1px solid white" : "1px solid transparent",
+        backgroundColor: isFocused ? "rgba(0,0,0,.9)" : "transparent",
+        transition: "width .2s ease, border-color .2s ease",
+        }}
+      >
+      <IconButton
+        type="button"
+        aria-label="Search titles"
+        onClick={() => {
+          if (!isFocused) searchInputRef.current?.focus();
+          else if (query.trim())
+            navigate(`/search?query=${encodeURIComponent(query.trim())}`);
+          else searchInputRef.current?.focus();
+        }}
+        color="inherit"
+        size="small"
+      >
         <SearchIcon />
-      </SearchIconWrapper>
+      </IconButton>
       <StyledInputBase
         inputRef={searchInputRef}
         placeholder="Titles, people, genres"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        onFocus={() => setIsFocused(true)}
+        onBlur={() => setIsFocused(false)}
         inputProps={{
           "aria-label": "search",
-          onFocus: () => {
-            setIsFocused(true);
-          },
-          onBlur: () => {
-            setIsFocused(false);
+        }}
+        sx={{
+          flex: 1,
+          minWidth: 0,
+          "& .NetflixInputBase-input": {
+            width: "100%",
+            py: 0.75,
+            opacity: isFocused ? 1 : 0,
+            transition: "opacity .15s ease",
           },
         }}
       />
-    </Search>
+      </Search>
+    </Box>
   );
 }

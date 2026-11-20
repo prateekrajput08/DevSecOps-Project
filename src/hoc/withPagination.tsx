@@ -48,6 +48,8 @@ export default function withPagination(
           mediaType,
           apiString: (genre as CustomGenre).apiString,
           page,
+          companyId: (genre as CustomGenre).companyId,
+          collectionId: (genre as CustomGenre).collectionId,
         });
       }
       // dispatch(setNextPage({ mediaType, itemKey }));
@@ -55,7 +57,12 @@ export default function withPagination(
 
     if (pageState) {
       return (
-        <Component genre={genre} data={pageState} handleNext={handleNext} />
+        <Component
+          genre={genre}
+          data={pageState}
+          handleNext={handleNext}
+          mediaType={mediaType}
+        />
       );
     }
     return <MainLoadingScreen />;

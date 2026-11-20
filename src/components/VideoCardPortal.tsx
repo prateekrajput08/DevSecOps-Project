@@ -25,19 +25,23 @@ import { MAIN_PATH } from "src/constant";
 interface VideoCardModalProps {
   video: Movie;
   anchorElement: HTMLElement;
+  mediaType: MEDIA_TYPE;
 }
 
 export default function VideoCardModal({
   video,
   anchorElement,
+  mediaType,
 }: VideoCardModalProps) {
   const navigate = useNavigate();
 
   const { data: configuration } = useGetConfigurationQuery(undefined);
-  const { data: genres } = useGetGenresQuery(MEDIA_TYPE.Movie);
+  const { data: genres } = useGetGenresQuery(mediaType);
   const setPortal = usePortal();
   const rect = anchorElement.getBoundingClientRect();
   const { setDetailType } = useDetailModal();
+  const title =
+    video.title || (video as Movie & { name?: string }).name || "Untitled";
 
   return (
     <Card
@@ -85,7 +89,7 @@ export default function VideoCardModal({
             sx={{ width: "80%", fontWeight: 700 }}
             variant="h6"
           >
-            {video.title}
+            {title}
           </MaxLineTypography>
           <div style={{ flexGrow: 1 }} />
           <NetflixIconButton>
@@ -98,7 +102,11 @@ export default function VideoCardModal({
           <Stack direction="row" spacing={1}>
             <NetflixIconButton
               sx={{ p: 0 }}
-              onClick={() => navigate(`/${MAIN_PATH.watch}`)}
+              onClick={() =>
+                navigate(
+                  `/${MAIN_PATH.watch}?mediaType=${mediaType}&id=${video.id}`
+                )
+              }
             >
               <PlayCircleIcon sx={{ width: 40, height: 40 }} />
             </NetflixIconButton>
@@ -111,7 +119,7 @@ export default function VideoCardModal({
             <div style={{ flexGrow: 1 }} />
             <NetflixIconButton
               onClick={() => {
-                setDetailType({ mediaType: MEDIA_TYPE.Movie, id: video.id });
+                setDetailType({ mediaType, id: video.id });
               }}
             >
               <ExpandMoreIcon />

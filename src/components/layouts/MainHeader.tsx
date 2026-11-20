@@ -16,7 +16,7 @@ import Logo from "../Logo";
 import SearchBox from "../SearchBox";
 import NetflixNavigationLink from "../NetflixNavigationLink";
 
-const pages = ["My List", "Movies", "Tv Shows"];
+const pages = ["Home", "TV Series", "Movies"];
 
 const MainHeader = () => {
   const isOffset = useOffSetTop(APP_BAR_HEIGHT);
@@ -46,16 +46,13 @@ const MainHeader = () => {
   return (
     <AppBar
       sx={{
-        // px: "4%",
-        px: "60px",
+        px: { xs: 2, sm: 4, md: 7.5 },
         height: APP_BAR_HEIGHT,
         backgroundImage: "none",
-        ...(isOffset
-          ? {
-              bgcolor: "primary.main",
-              boxShadow: (theme) => theme.shadows[4],
-            }
-          : { boxShadow: 0, bgcolor: "transparent" }),
+        bgcolor: isOffset ? "rgba(8, 8, 8, .98)" : "rgba(8, 8, 8, .88)",
+        boxShadow: isOffset ? "0 8px 28px rgba(0,0,0,.28)" : 0,
+        backdropFilter: "blur(16px)",
+        transition: "background-color .25s ease, box-shadow .25s ease",
       }}
     >
       <Toolbar disableGutters>
@@ -97,22 +94,6 @@ const MainHeader = () => {
             ))}
           </Menu>
         </Box>
-        <Typography
-          variant="h5"
-          noWrap
-          component="a"
-          href=""
-          sx={{
-            mr: 2,
-            display: { xs: "flex", md: "none" },
-            flexGrow: 1,
-            fontWeight: 700,
-            color: "inherit",
-            textDecoration: "none",
-          }}
-        >
-          Netflix
-        </Typography>
         <Stack
           direction="row"
           spacing={3}
@@ -130,7 +111,7 @@ const MainHeader = () => {
           ))}
         </Stack>
 
-        <Box sx={{ flexGrow: 0, display: "flex", gap: 2 }}>
+        <Box sx={{ flexGrow: 0, display: "flex", gap: { xs: 1, sm: 2 } }}>
           <SearchBox />
           <Tooltip title="Open settings">
             <IconButton onClick={handleOpenUserMenu} sx={{ p: 0 }}>

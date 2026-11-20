@@ -9,9 +9,9 @@ export default function MoreInfoButton({ sx, ...others }: ButtonProps) {
         <InfoOutlinedIcon
           sx={{
             fontSize: {
-              xs: "24px !important",
-              sm: "32px !important",
-              md: "40px !important",
+              xs: "19px !important",
+              sm: "21px !important",
+              md: "22px !important",
             },
           }}
         />
@@ -19,10 +19,10 @@ export default function MoreInfoButton({ sx, ...others }: ButtonProps) {
       {...others}
       sx={{
         ...sx,
-        px: { xs: 1, sm: 2 },
-        py: { xs: 0.5, sm: 1 },
-        fontSize: { xs: 18, sm: 24, md: 28 },
-        lineHeight: 1.5,
+        px: { xs: 1.5, sm: 2 },
+        py: { xs: 0.65, sm: 0.8 },
+        fontSize: { xs: 14, sm: 15, md: 16 },
+        lineHeight: 1.35,
         fontWeight: "bold",
         textTransform: "capitalize",
         bgcolor: "#6d6d6eb3",
