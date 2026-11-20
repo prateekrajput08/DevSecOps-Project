@@ -1,759 +1,1197 @@
-<div align="center">
-  <img src="./public/assets/DevSecOps.png" alt="Logo" width="100%" height="100%">
-
-  <br>
-  <a href="http://netflix-clone-with-tmdb-using-react-mui.vercel.app/">
-    <img src="./public/assets/netflix-logo.png" alt="Logo" width="100" height="32">
-  </a>
-</div>
-
-<br />
+# netflix-mirror: DevSecOps on AWS with GitLab CI
 
 <div align="center">
-  <img src="./public/assets/home-page.png" alt="Logo" width="100%" height="100%">
-  <p align="center">Home Page</p>
+  <img src="./public/assets/netflix-logo.png" alt="netflix-mirror logo" width="100" height="32">
+  <br><br>
+  <img src="./public/assets/home-page.png" alt="Home page" width="100%">
+  <p>Home Page</p>
 </div>
 
-# **Youtube Video for step by step Demonstration!**
-[![Video Tutorial](https://img.youtube.com/vi/g8X5AoqCJHc/0.jpg)](https://youtu.be/g8X5AoqCJHc)
+A React + TMDB streaming-UI clone with a serverless profile-picture backend, shipped through a DevSecOps pipeline:
+**GitLab CI → SonarQube / Trivy → Amazon ECR → Amazon EKS (via ArgoCD)**, monitored with **Prometheus + Grafana**,
+with **S3 + Lambda + API Gateway + Cognito** for profile pictures and **SNS** for notifications.
 
+All servers use **Amazon Linux 2023** (default user `ec2-user`, package manager `dnf`).
 
-## Susbcribe:
-[https://www.youtube.com/@cloudchamp?
-](https://www.youtube.com/@cloudchamp?sub_confirmation=1)
+---
 
-# Deploy Netflix Clone on Cloud using Jenkins - DevSecOps Project!
+## Architecture and AWS services
 
-### **Phase 1: Initial Setup and Deployment**
-
-**Step 1: Launch EC2 (Ubuntu 22.04):**
-
-- Provision an EC2 instance on AWS with Ubuntu 22.04.
-- Connect to the instance using SSH.
-
-**Step 2: Clone the Code:**
-
-- Update all the packages and then clone the code.
-- Clone your application's code repository onto the EC2 instance:
-    
-    ```bash
-    git clone https://github.com/N4si/DevSecOps-Project.git
-    ```
-    
-
-**Step 3: Install Docker and Run the App Using a Container:**
-
-- Set up Docker on the EC2 instance:
-    
-    ```bash
-    
-    sudo apt-get update
-    sudo apt-get install docker.io -y
-    sudo usermod -aG docker $USER  # Replace with your system's username, e.g., 'ubuntu'
-    newgrp docker
-    sudo chmod 777 /var/run/docker.sock
-    ```
-    
-- Build and run your application using Docker containers:
-    
-    ```bash
-    docker build -t netflix .
-    docker run -d --name netflix -p 8081:80 netflix:latest
-    
-    #to delete
-    docker stop <containerid>
-    docker rmi -f netflix
-    ```
-
-It will show an error cause you need API key
-
-**Step 4: Get the API Key:**
-
-- Open a web browser and navigate to TMDB (The Movie Database) website.
-- Click on "Login" and create an account.
-- Once logged in, go to your profile and select "Settings."
-- Click on "API" from the left-side panel.
-- Create a new API key by clicking "Create" and accepting the terms and conditions.
-- Provide the required basic details and click "Submit."
-- You will receive your TMDB API key.
-
-Now recreate the Docker image with your api key:
 ```
-docker build --build-arg TMDB_V3_API_KEY=<your-api-key> -t netflix .
+Developer ─► GitLab (repo + CI) ─► GitLab Runner (EC2, Amazon Linux 2023)
+                                     ├─► SonarQube (code quality / SAST)
+                                     ├─► Trivy (dependency, secret, image CVEs)
+                                     ├─► Amazon ECR (image registry) ──► EventBridge ─► Lambda ─► SNS
+                                     └─► Lambda deploy (update-function-code)
+                                                │
+                    GitLab CI commits new image tag to k8s/ manifests
+                                                │
+                              ArgoCD (in EKS) syncs ─► Amazon EKS (managed node group)
+                                                              │
+              Prometheus + Grafana (EC2) ◄── node exporter ───┘
+
+Browser ─► Cognito (login) ─► API Gateway (JWT authorizer) ─► Lambda (profile-api)
+   │                                                              │ presigned URLs
+   └──────── upload directly ──────────────► S3 (uploads/) ─► Lambda (process-picture) ─► S3 (profiles/)
 ```
 
-**Phase 2: Security**
+| AWS service                       | Purpose in this project                                                                                        |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| **EC2** (Amazon Linux 2023)       | Tools server: GitLab Runner, SonarQube, Prometheus, Grafana                                                    |
+| **VPC, Security Groups**          | Network isolation; open only the ports you need, restricted to your IP                                         |
+| **IAM** (roles, instance profile) | Credentials for the runner, Lambdas, and EKS, with no access keys stored anywhere (see below)                  |
+| **ECR**                           | Private Docker registry; scan-on-push enabled                                                                  |
+| **EKS** (managed node groups)     | Runs the app and ArgoCD                                                                                        |
+| **S3**                            | Stores user profile pictures (private bucket)                                                                  |
+| **Lambda**                        | `profile-api` (presigned URLs), `process-picture` (validates uploads), `ecr-scan-alert` (vulnerability alerts) |
+| **API Gateway (HTTP API)**        | Public HTTPS entry point to the profile Lambda                                                                 |
+| **Cognito**                       | User sign-up/login; gives each user a stable ID for their picture                                              |
+| **EventBridge**                   | Triggers `ecr-scan-alert` when an ECR image scan finishes                                                      |
+| **SNS**                           | Email notifications: pipeline failures, vulnerable images, alarms                                              |
+| **CloudWatch**                    | Lambda/EC2 logs and alarms (alarms publish to SNS)                                                             |
+| **Elastic Load Balancing**        | Public access to ArgoCD and, in production, the app                                                            |
 
-1. **Install SonarQube and Trivy:**
-    - Install SonarQube and Trivy on the EC2 instance to scan for vulnerabilities.
-        
-        sonarqube
-        ```
-        docker run -d --name sonar -p 9000:9000 sonarqube:lts-community
-        ```
-        
-        
-        To access: 
-        
-        publicIP:9000 (by default username & password is admin)
-        
-        To install Trivy:
-        ```
-        sudo apt-get install wget apt-transport-https gnupg lsb-release
-        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
-        echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee -a /etc/apt/sources.list.d/trivy.list
-        sudo apt-get update
-        sudo apt-get install trivy        
-        ```
-        
-        to scan image using trivy
-        ```
-        trivy image <imageid>
-        ```
-        
-        
-2. **Integrate SonarQube and Configure:**
-    - Integrate SonarQube with your CI/CD pipeline.
-    - Configure SonarQube to analyze code for quality and security issues.
+---
 
-**Phase 3: CI/CD Setup**
+## Why IAM roles?
 
-1. **Install Jenkins for Automation:**
-    - Install Jenkins on the EC2 instance to automate deployment:
-    Install Java
-    
-    ```bash
-    sudo apt update
-    sudo apt install fontconfig openjdk-17-jre
-    java -version
-    openjdk version "17.0.8" 2023-07-18
-    OpenJDK Runtime Environment (build 17.0.8+7-Debian-1deb12u1)
-    OpenJDK 64-Bit Server VM (build 17.0.8+7-Debian-1deb12u1, mixed mode, sharing)
-    
-    #jenkins
-    sudo wget -O /usr/share/keyrings/jenkins-keyring.asc \
-    https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
-    echo deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] \
-    https://pkg.jenkins.io/debian-stable binary/ | sudo tee \
-    /etc/apt/sources.list.d/jenkins.list > /dev/null
-    sudo apt-get update
-    sudo apt-get install jenkins
-    sudo systemctl start jenkins
-    sudo systemctl enable jenkins
-    ```
-    
-    - Access Jenkins in a web browser using the public IP of your EC2 instance.
-        
-        publicIp:8080
-        
-2. **Install Necessary Plugins in Jenkins:**
+Every AWS call needs credentials. There are two ways to give them to a server or function:
 
-Goto Manage Jenkins →Plugins → Available Plugins →
+|             | IAM user + access keys                                                           | **IAM role** (used here)                                               |
+| ----------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Credentials | Long-lived `AKIA...` key pair you must store somewhere (GitLab variables, files) | Temporary credentials issued automatically and rotated every few hours |
+| If leaked   | Works until you notice and delete it                                             | Expires on its own and only works from the resource it is attached to  |
+| Setup       | Create keys, copy them into CI variables, rotate manually                        | Attach once; the AWS CLI/SDK finds credentials automatically           |
 
-Install below plugins
+So in this project:
 
-1 Eclipse Temurin Installer (Install without restart)
+- **EC2 instance role** (`netflix-mirror-tools-role`): the GitLab Runner pushes to ECR, publishes to SNS, and updates Lambda code without any AWS keys in GitLab.
+- **Lambda execution role** (`netflix-mirror-lambda-role`): required for every Lambda; it defines what the function may touch (this bucket, this topic) and nothing else.
+- **EKS cluster and node roles**: created by `eksctl`; they let EKS manage AWS resources and let nodes pull from ECR.
 
-2 SonarQube Scanner (Install without restart)
+Each role is scoped to least privilege. You could not skip roles for Lambda or EKS anyway; for the EC2 runner it is simply the safest option.
 
-3 NodeJs Plugin (Install Without restart)
+---
 
-4 Email Extension Plugin
+## Phase 0: AWS foundation
 
-### **Configure Java and Nodejs in Global Tool Configuration**
+Configure the AWS CLI on your workstation (`aws configure`), or use AWS CloudShell. Replace `us-east-1` and `<ACCOUNT_ID>` with your own.
 
-Goto Manage Jenkins → Tools → Install JDK(17) and NodeJs(16)→ Click on Apply and Save
+**1. ECR repository (scan on push)**
 
+```bash
+aws ecr create-repository \
+  --repository-name netflix-mirror \
+  --image-scanning-configuration scanOnPush=true \
+  --region us-east-1
+```
 
-### SonarQube
+Registry URI: `<ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/netflix-mirror`.
 
-Create the token
+**2. SNS topic**
 
-Goto Jenkins Dashboard → Manage Jenkins → Credentials → Add Secret Text. It should look like this
+```bash
+aws sns create-topic --name netflix-mirror-alerts
+aws sns subscribe \
+  --topic-arn arn:aws:sns:us-east-1:<ACCOUNT_ID>:netflix-mirror-alerts \
+  --protocol email --notification-endpoint you@example.com
+```
 
-After adding sonar token
+Confirm the subscription from your inbox.
 
-Click on Apply and Save
+**3. IAM role for the tools EC2 instance**
 
-**The Configure System option** is used in Jenkins to configure different server
+Create an EC2 role named `netflix-mirror-tools-role` with the policy below, and attach it to the instance as an instance profile.
 
-**Global Tool Configuration** is used to configure different tools that we install using Plugins
-
-We will install a sonar scanner in the tools.
-
-Create a Jenkins webhook
-
-1. **Configure CI/CD Pipeline in Jenkins:**
-- Create a CI/CD pipeline in Jenkins to automate your application deployment.
-
-```groovy
-pipeline {
-    agent any
-    tools {
-        jdk 'jdk17'
-        nodejs 'node16'
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:InitiateLayerUpload",
+        "ecr:UploadLayerPart",
+        "ecr:CompleteLayerUpload",
+        "ecr:PutImage"
+      ],
+      "Resource": "arn:aws:ecr:us-east-1:<ACCOUNT_ID>:repository/netflix-mirror"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "sns:Publish",
+      "Resource": "arn:aws:sns:us-east-1:<ACCOUNT_ID>:netflix-mirror-alerts"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "lambda:UpdateFunctionCode",
+      "Resource": "arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:netflix-mirror-*"
     }
-    environment {
-        SCANNER_HOME = tool 'sonar-scanner'
-    }
-    stages {
-        stage('clean workspace') {
-            steps {
-                cleanWs()
-            }
-        }
-        stage('Checkout from Git') {
-            steps {
-                git branch: 'main', url: 'https://github.com/N4si/DevSecOps-Project.git'
-            }
-        }
-        stage("Sonarqube Analysis") {
-            steps {
-                withSonarQubeEnv('sonar-server') {
-                    sh '''$SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Netflix \
-                    -Dsonar.projectKey=Netflix'''
-                }
-            }
-        }
-        stage("quality gate") {
-            steps {
-                script {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'Sonar-token'
-                }
-            }
-        }
-        stage('Install Dependencies') {
-            steps {
-                sh "npm install"
-            }
-        }
-    }
+  ]
 }
 ```
 
-Certainly, here are the instructions without step numbers:
+**4. Security group for the tools server**
 
-**Install Dependency-Check and Docker Tools in Jenkins**
+Allow inbound only from your IP (`<your-ip>/32`):
 
-**Install Dependency-Check Plugin:**
+| Port | Service    |
+| ---- | ---------- |
+| 22   | SSH        |
+| 9000 | SonarQube  |
+| 9090 | Prometheus |
+| 3000 | Grafana    |
 
-- Go to "Dashboard" in your Jenkins web interface.
-- Navigate to "Manage Jenkins" → "Manage Plugins."
-- Click on the "Available" tab and search for "OWASP Dependency-Check."
-- Check the checkbox for "OWASP Dependency-Check" and click on the "Install without restart" button.
+Port 9100 (Node Exporter) must be reachable from the tools server to the EKS nodes (a security group rule between the two groups). The runner metrics port 9252 is scraped locally and needs no inbound rule.
 
-**Configure Dependency-Check Tool:**
+---
 
-- After installing the Dependency-Check plugin, you need to configure the tool.
-- Go to "Dashboard" → "Manage Jenkins" → "Global Tool Configuration."
-- Find the section for "OWASP Dependency-Check."
-- Add the tool's name, e.g., "DP-Check."
-- Save your settings.
+## Phase 1: Initial setup and deployment
 
-**Install Docker Tools and Docker Plugins:**
+**Step 1: Launch EC2 (Amazon Linux 2023)**
 
-- Go to "Dashboard" in your Jenkins web interface.
-- Navigate to "Manage Jenkins" → "Manage Plugins."
-- Click on the "Available" tab and search for "Docker."
-- Check the following Docker-related plugins:
-  - Docker
-  - Docker Commons
-  - Docker Pipeline
-  - Docker API
-  - docker-build-step
-- Click on the "Install without restart" button to install these plugins.
+- AMI: **Amazon Linux 2023**, instance type `t3.large` (SonarQube needs memory), 30 GB gp3 volume.
+- Attach the `netflix-mirror-tools-role` instance profile and the security group from Phase 0.
+- Set **IMDSv2 required** and **hop limit = 2**, so containers started by the runner can use the instance role:
 
-**Add DockerHub Credentials:**
+  ```bash
+  aws ec2 modify-instance-metadata-options \
+    --instance-id <instance-id> \
+    --http-tokens required \
+    --http-put-response-hop-limit 2
+  ```
 
-- To securely handle DockerHub credentials in your Jenkins pipeline, follow these steps:
-  - Go to "Dashboard" → "Manage Jenkins" → "Manage Credentials."
-  - Click on "System" and then "Global credentials (unrestricted)."
-  - Click on "Add Credentials" on the left side.
-  - Choose "Secret text" as the kind of credentials.
-  - Enter your DockerHub credentials (Username and Password) and give the credentials an ID (e.g., "docker").
-  - Click "OK" to save your DockerHub credentials.
+- Connect: `ssh -i <key>.pem ec2-user@<public-ip>`.
 
-Now, you have installed the Dependency-Check plugin, configured the tool, and added Docker-related plugins along with your DockerHub credentials in Jenkins. You can now proceed with configuring your Jenkins pipeline to include these tools and credentials in your CI/CD process.
+**Step 2: Update packages and clone the code**
 
-```groovy
+```bash
+sudo dnf update -y
+sudo dnf install -y git
+git clone https://gitlab.com/<your-group>/netflix-mirror.git
+cd netflix-mirror
+```
 
-pipeline{
-    agent any
-    tools{
-        jdk 'jdk17'
-        nodejs 'node16'
+To import the original source into your GitLab project:
+
+```bash
+git remote set-url origin https://gitlab.com/<your-group>/netflix-mirror.git
+git push -u origin main
+```
+
+**Step 3: Install Docker and run the app**
+
+```bash
+sudo dnf install -y docker
+sudo systemctl enable --now docker
+sudo usermod -aG docker ec2-user
+newgrp docker
+```
+
+Build and run:
+
+```bash
+docker build -t netflix-mirror .
+docker run -d --name netflix-mirror -p 8081:80 netflix-mirror:latest
+```
+
+It will show an error until you provide a TMDB API key.
+
+**Step 4: Get the TMDB API key**
+
+- Create an account on the TMDB website.
+- Profile → **Settings** → **API** → create a key (accept the terms, fill in basic details).
+- Rebuild with your key:
+
+```bash
+docker build --build-arg TMDB_V3_API_KEY=<your-api-key> -t netflix-mirror .
+```
+
+Note: this is a client-side app, so the key ends up in the built JavaScript. Use a key you can rotate and keep it out of Git (store it as a masked GitLab CI variable).
+
+---
+
+## Phase 2: Security
+
+**SonarQube** (needs a kernel setting for its embedded search engine):
+
+```bash
+sudo sysctl -w vm.max_map_count=524288
+echo "vm.max_map_count=524288" | sudo tee /etc/sysctl.d/99-sonarqube.conf
+
+docker run -d --name sonar -p 9000:9000 sonarqube:lts-community
+```
+
+Open `http://<public-ip>:9000` (default `admin` / `admin`; you will be asked to change it).
+
+1. **Projects → Create project → Manually**: key `netflix-mirror`, name `netflix-mirror`.
+2. Generate a token and keep it for Phase 3 (`SONAR_TOKEN`).
+
+Add `sonar-project.properties` at the repo root:
+
+```properties
+sonar.projectKey=netflix-mirror
+sonar.projectName=netflix-mirror
+sonar.sources=src,lambda
+sonar.exclusions=**/node_modules/**,**/build/**,**/dist/**
+```
+
+**Trivy** runs inside the pipeline as a container, so nothing needs to be installed on the server. To scan manually from the terminal:
+
+```bash
+curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+trivy image netflix-mirror:latest
+```
+
+---
+
+## Phase 3: CI/CD with GitLab
+
+### 3.1 Install and register a GitLab Runner (Amazon Linux 2023)
+
+```bash
+sudo curl -L --output /usr/local/bin/gitlab-runner \
+  https://gitlab-runner-downloads.s3.amazonaws.com/latest/binaries/gitlab-runner-linux-amd64
+sudo chmod +x /usr/local/bin/gitlab-runner
+
+sudo useradd --comment 'GitLab Runner' --create-home gitlab-runner --shell /bin/bash
+sudo usermod -aG docker gitlab-runner
+sudo gitlab-runner install --user=gitlab-runner --working-directory=/home/gitlab-runner
+sudo gitlab-runner start
+```
+
+(For a Graviton/ARM instance, use the `linux-arm64` binary instead.)
+
+In GitLab: **Settings → CI/CD → Runners → New project runner**, add the tag `aws`, and copy the token (starts with `glrt-`). Register:
+
+```bash
+sudo gitlab-runner register \
+  --non-interactive \
+  --url https://gitlab.com \
+  --token <glrt-your-runner-token> \
+  --executor docker \
+  --docker-image docker:27 \
+  --docker-privileged \
+  --description "netflix-mirror-ec2-runner"
+```
+
+Add this line at the top of `/etc/gitlab-runner/config.toml` so Prometheus can scrape the runner, then restart:
+
+```toml
+listen_address = ":9252"
+```
+
+```bash
+sudo gitlab-runner restart
+sudo gitlab-runner verify
+```
+
+For self-managed GitLab, change `--url` to your server.
+
+### 3.2 CI/CD variables
+
+**Settings → CI/CD → Variables** (mark secrets _Masked_):
+
+| Variable            | Value                                                         |
+| ------------------- | ------------------------------------------------------------- |
+| `AWS_REGION`        | `us-east-1`                                                   |
+| `ECR_REPO_URI`      | `<ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/netflix-mirror` |
+| `SNS_TOPIC_ARN`     | `arn:aws:sns:us-east-1:<ACCOUNT_ID>:netflix-mirror-alerts`    |
+| `SONAR_HOST_URL`    | `http://<tools-server-private-ip>:9000`                       |
+| `SONAR_TOKEN`       | token from Phase 2 (Masked)                                   |
+| `TMDB_V3_API_KEY`   | your TMDB key (Masked)                                        |
+| `API_URL`           | API Gateway URL from Phase 4                                  |
+| `GITLAB_PUSH_TOKEN` | project access token with `write_repository` (Masked)         |
+
+### 3.3 Kubernetes manifests
+
+```yaml
+# k8s/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netflix-mirror
+  labels:
+    app: netflix-mirror
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: netflix-mirror
+  template:
+    metadata:
+      labels:
+        app: netflix-mirror
+    spec:
+      containers:
+        - name: netflix-mirror
+          image: <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/netflix-mirror:latest
+          ports:
+            - containerPort: 80
+```
+
+```yaml
+# k8s/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: netflix-mirror
+spec:
+  type: NodePort
+  selector:
+    app: netflix-mirror
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30007
+```
+
+### 3.4 `.gitlab-ci.yml`
+
+```yaml
+stages:
+  - sast
+  - scan
+  - build
+  - image-scan
+  - deploy
+
+default:
+  tags:
+    - aws
+
+variables:
+  IMAGE_TAG: $CI_COMMIT_SHORT_SHA
+
+# ---------- SonarQube analysis + quality gate ----------
+sonarqube_analysis:
+  stage: sast
+  image:
+    name: sonarsource/sonar-scanner-cli:latest
+    entrypoint: [""]
+  variables:
+    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"
+    GIT_DEPTH: "0"
+  script:
+    - sonar-scanner
+        -Dsonar.projectKey=netflix-mirror
+        -Dsonar.projectName=netflix-mirror
+        -Dsonar.host.url=$SONAR_HOST_URL
+        -Dsonar.token=$SONAR_TOKEN
+        -Dsonar.qualitygate.wait=true
+  allow_failure: true   # set to false to make the quality gate block the pipeline
+
+# ---------- Trivy filesystem scan (dependencies, secrets, misconfigurations) ----------
+trivy_fs_scan:
+  stage: scan
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  script:
+    - trivy fs . > trivyfs.txt
+  artifacts:
+    when: always
+    paths:
+      - trivyfs.txt
+    expire_in: 7 days
+
+# ---------- Build image and push to Amazon ECR ----------
+docker_build_push:
+  stage: build
+  image: docker:27
+  services:
+    - docker:27-dind
+  before_script:
+    - apk add --no-cache aws-cli
+    - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin ${ECR_REPO_URI%%/*}
+  script:
+    - docker build
+        --build-arg TMDB_V3_API_KEY=$TMDB_V3_API_KEY
+        --build-arg API_URL=$API_URL
+        -t $ECR_REPO_URI:$IMAGE_TAG -t $ECR_REPO_URI:latest .
+    - docker push $ECR_REPO_URI:$IMAGE_TAG
+    - docker push $ECR_REPO_URI:latest
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# ---------- Trivy image scan ----------
+trivy_image_scan:
+  stage: image-scan
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  script:
+    - trivy image $ECR_REPO_URI:$IMAGE_TAG > trivyimage.txt
+  artifacts:
+    when: always
+    paths:
+      - trivyimage.txt
+    expire_in: 7 days
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# ---------- GitOps deploy: update manifest, ArgoCD syncs to EKS ----------
+update_manifest:
+  stage: deploy
+  image:
+    name: alpine/git:latest
+    entrypoint: [""]
+  script:
+    - sed -i "s|image: .*|image: ${ECR_REPO_URI}:${IMAGE_TAG}|" k8s/deployment.yaml
+    - git config user.email "ci@netflix-mirror.local"
+    - git config user.name "gitlab-ci"
+    - git add k8s/deployment.yaml
+    - git commit -m "ci - deploy ${IMAGE_TAG} [skip ci]"
+    - git push "https://oauth2:${GITLAB_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" HEAD:main
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# ---------- Deploy Lambda code when it changes ----------
+deploy_lambdas:
+  stage: deploy
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
+  script:
+    - yum install -y zip
+    - |
+      for fn in profile-api process-picture ecr-scan-alert; do
+        (cd lambda/$fn && zip -q -r ../../$fn.zip .)
+        aws lambda update-function-code --region $AWS_REGION \
+          --function-name netflix-mirror-$fn --zip-file fileb://$fn.zip
+      done
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        - lambda/**/*
+
+# ---------- Notification on failure (Amazon SNS) ----------
+notify_failure:
+  stage: .post
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
+  script:
+    - aws sns publish --region $AWS_REGION --topic-arn $SNS_TOPIC_ARN
+        --subject "netflix-mirror pipeline FAILED"
+        --message "Pipeline $CI_PIPELINE_ID failed on $CI_COMMIT_REF_NAME. $CI_PIPELINE_URL"
+  when: on_failure
+```
+
+Your Dockerfile needs an `ARG API_URL` handled the same way as `TMDB_V3_API_KEY`, so the frontend knows where the API lives.
+
+**Troubleshooting**
+
+- `Cannot connect to the Docker daemon`: the runner must be registered with `--docker-privileged` and the job must use the `docker:27-dind` service.
+- `Unable to locate credentials` in a job: the instance metadata hop limit must be 2 and the instance profile must be attached.
+- Pipeline loops: the `[skip ci]` in the manifest commit message prevents the deploy commit from re-triggering CI.
+
+---
+
+## Phase 4: Profile pictures with S3, Lambda, API Gateway and Cognito
+
+**Flow:** the user signs in with Cognito → the frontend asks `profile-api` for an upload URL → the browser uploads **directly to S3** (the file never passes through Lambda) → S3 triggers `process-picture`, which checks that the file is really an image and moves it to `profiles/<user-id>/avatar`.
+
+### 4.1 S3 bucket (private)
+
+```bash
+export BUCKET=netflix-mirror-profile-pics-<ACCOUNT_ID>
+
+aws s3api create-bucket --bucket $BUCKET --region us-east-1
+# (outside us-east-1 add: --create-bucket-configuration LocationConstraint=<region>)
+
+aws s3api put-public-access-block --bucket $BUCKET \
+  --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+```
+
+New buckets are encrypted at rest with SSE-S3 by default. Browser uploads need CORS (`cors.json`):
+
+```json
+{
+  "CORSRules": [
+    {
+      "AllowedOrigins": ["https://<your-app-domain>", "http://localhost:3000"],
+      "AllowedMethods": ["GET", "POST"],
+      "AllowedHeaders": ["*"],
+      "MaxAgeSeconds": 3000
     }
-    environment {
-        SCANNER_HOME=tool 'sonar-scanner'
+  ]
+}
+```
+
+```bash
+aws s3api put-bucket-cors --bucket $BUCKET --cors-configuration file://cors.json
+```
+
+Delete unprocessed uploads automatically after a day (`lifecycle.json`):
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "expire-uploads",
+      "Filter": { "Prefix": "uploads/" },
+      "Status": "Enabled",
+      "Expiration": { "Days": 1 }
     }
-    stages {
-        stage('clean workspace'){
-            steps{
-                cleanWs()
-            }
-        }
-        stage('Checkout from Git'){
-            steps{
-                git branch: 'main', url: 'https://github.com/N4si/DevSecOps-Project.git'
-            }
-        }
-        stage("Sonarqube Analysis "){
-            steps{
-                withSonarQubeEnv('sonar-server') {
-                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Netflix \
-                    -Dsonar.projectKey=Netflix '''
-                }
-            }
-        }
-        stage("quality gate"){
-           steps {
-                script {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'Sonar-token' 
-                }
-            } 
-        }
-        stage('Install Dependencies') {
-            steps {
-                sh "npm install"
-            }
-        }
-        stage('OWASP FS SCAN') {
-            steps {
-                dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit', odcInstallation: 'DP-Check'
-                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
-            }
-        }
-        stage('TRIVY FS SCAN') {
-            steps {
-                sh "trivy fs . > trivyfs.txt"
-            }
-        }
-        stage("Docker Build & Push"){
-            steps{
-                script{
-                   withDockerRegistry(credentialsId: 'docker', toolName: 'docker'){   
-                       sh "docker build --build-arg TMDB_V3_API_KEY=<yourapikey> -t netflix ."
-                       sh "docker tag netflix nasi101/netflix:latest "
-                       sh "docker push nasi101/netflix:latest "
-                    }
-                }
-            }
-        }
-        stage("TRIVY"){
-            steps{
-                sh "trivy image nasi101/netflix:latest > trivyimage.txt" 
-            }
-        }
-        stage('Deploy to container'){
-            steps{
-                sh 'docker run -d --name netflix -p 8081:80 nasi101/netflix:latest'
-            }
-        }
+  ]
+}
+```
+
+```bash
+aws s3api put-bucket-lifecycle-configuration --bucket $BUCKET --lifecycle-configuration file://lifecycle.json
+```
+
+### 4.2 Cognito user pool
+
+```bash
+aws cognito-idp create-user-pool --pool-name netflix-mirror-users \
+  --username-attributes email --auto-verified-attributes email
+
+aws cognito-idp create-user-pool-client --user-pool-id <USER_POOL_ID> \
+  --client-name netflix-mirror-web --no-generate-secret \
+  --explicit-auth-flows ALLOW_USER_SRP_AUTH ALLOW_REFRESH_TOKEN_AUTH
+```
+
+Use the `amazon-cognito-identity-js` or AWS Amplify Auth library in the React app to sign users in and obtain a token.
+
+### 4.3 Lambda execution role
+
+`lambda-trust.json`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "Service": "lambda.amazonaws.com" },
+      "Action": "sts:AssumeRole"
     }
+  ]
+}
+```
+
+`lambda-policy.json`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::netflix-mirror-profile-pics-<ACCOUNT_ID>/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::netflix-mirror-profile-pics-<ACCOUNT_ID>"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "sns:Publish",
+      "Resource": "arn:aws:sns:us-east-1:<ACCOUNT_ID>:netflix-mirror-alerts"
+    }
+  ]
+}
+```
+
+```bash
+aws iam create-role --role-name netflix-mirror-lambda-role --assume-role-policy-document file://lambda-trust.json
+aws iam attach-role-policy --role-name netflix-mirror-lambda-role \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+aws iam put-role-policy --role-name netflix-mirror-lambda-role \
+  --policy-name netflix-mirror-lambda-access --policy-document file://lambda-policy.json
+```
+
+### 4.4 Lambda functions (Python 3.12)
+
+Repo layout:
+
+```
+lambda/
+├── profile-api/handler.py
+├── process-picture/handler.py
+└── ecr-scan-alert/handler.py
+```
+
+**`lambda/profile-api/handler.py`**: returns a presigned upload form and a presigned URL to view the picture.
+
+```python
+import json
+import os
+import uuid
+
+import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError
+
+s3 = boto3.client("s3", config=Config(signature_version="s3v4"))
+BUCKET = os.environ["BUCKET"]
+ALLOWED = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
+MAX_BYTES = 2 * 1024 * 1024  # 2 MB
+
+
+def respond(status, body):
+    return {
+        "statusCode": status,
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps(body),
+    }
+
+
+def handler(event, context):
+    user_id = event["requestContext"]["authorizer"]["jwt"]["claims"]["sub"]
+    route = event["routeKey"]
+
+    if route == "POST /profile/picture/upload-url":
+        content_type = json.loads(event.get("body") or "{}").get("contentType")
+        if content_type not in ALLOWED:
+            return respond(400, {"error": "Only JPEG, PNG or WebP images are allowed"})
+        key = f"uploads/{user_id}/{uuid.uuid4()}.{ALLOWED[content_type]}"
+        post = s3.generate_presigned_post(
+            Bucket=BUCKET,
+            Key=key,
+            Fields={"Content-Type": content_type},
+            Conditions=[
+                {"Content-Type": content_type},
+                ["content-length-range", 1, MAX_BYTES],
+            ],
+            ExpiresIn=300,
+        )
+        return respond(200, post)
+
+    if route == "GET /profile/picture":
+        key = f"profiles/{user_id}/avatar"
+        try:
+            s3.head_object(Bucket=BUCKET, Key=key)
+        except ClientError:
+            return respond(200, {"url": None})
+        url = s3.generate_presigned_url(
+            "get_object", Params={"Bucket": BUCKET, "Key": key}, ExpiresIn=3600
+        )
+        return respond(200, {"url": url})
+
+    return respond(404, {"error": "Not found"})
+```
+
+**`lambda/process-picture/handler.py`**: triggered by S3 when a file lands in `uploads/`.
+
+```python
+import urllib.parse
+
+import boto3
+
+s3 = boto3.client("s3")
+
+
+def detect_type(head: bytes):
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head[0:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def handler(event, context):
+    for record in event["Records"]:
+        bucket = record["s3"]["bucket"]["name"]
+        key = urllib.parse.unquote_plus(record["s3"]["object"]["key"])
+        user_id = key.split("/")[1]
+
+        head = s3.get_object(Bucket=bucket, Key=key, Range="bytes=0-11")["Body"].read()
+        content_type = detect_type(head)
+
+        if content_type:
+            s3.copy_object(
+                Bucket=bucket,
+                Key=f"profiles/{user_id}/avatar",
+                CopySource={"Bucket": bucket, "Key": key},
+                ContentType=content_type,
+                MetadataDirective="REPLACE",
+            )
+        else:
+            print(f"Rejected non-image upload: {key}")
+
+        s3.delete_object(Bucket=bucket, Key=key)
+```
+
+**`lambda/ecr-scan-alert/handler.py`**: emails you when a pushed image has HIGH or CRITICAL findings.
+
+```python
+import os
+
+import boto3
+
+sns = boto3.client("sns")
+
+
+def handler(event, context):
+    detail = event["detail"]
+    counts = detail.get("finding-severity-counts", {})
+    critical, high = counts.get("CRITICAL", 0), counts.get("HIGH", 0)
+    if critical == 0 and high == 0:
+        return
+
+    sns.publish(
+        TopicArn=os.environ["SNS_TOPIC_ARN"],
+        Subject="netflix-mirror: vulnerable image pushed to ECR",
+        Message=(
+            f"Repository: {detail.get('repository-name')}\n"
+            f"Tags: {detail.get('image-tags')}\n"
+            f"CRITICAL: {critical}, HIGH: {high}\n"
+            f"Full findings: {counts}"
+        ),
+    )
+```
+
+**Create the functions** (first time only; afterwards GitLab CI updates the code):
+
+```bash
+for fn in profile-api process-picture ecr-scan-alert; do
+  (cd lambda/$fn && zip -q -r ../../$fn.zip .)
+done
+
+ROLE=arn:aws:iam::<ACCOUNT_ID>:role/netflix-mirror-lambda-role
+
+aws lambda create-function --function-name netflix-mirror-profile-api \
+  --runtime python3.12 --handler handler.handler --role $ROLE --timeout 10 \
+  --zip-file fileb://profile-api.zip --environment "Variables={BUCKET=$BUCKET}"
+
+aws lambda create-function --function-name netflix-mirror-process-picture \
+  --runtime python3.12 --handler handler.handler --role $ROLE --timeout 15 \
+  --zip-file fileb://process-picture.zip
+
+aws lambda create-function --function-name netflix-mirror-ecr-scan-alert \
+  --runtime python3.12 --handler handler.handler --role $ROLE --timeout 10 \
+  --zip-file fileb://ecr-scan-alert.zip \
+  --environment "Variables={SNS_TOPIC_ARN=arn:aws:sns:us-east-1:<ACCOUNT_ID>:netflix-mirror-alerts}"
+```
+
+### 4.5 Connect S3 → Lambda (processing)
+
+```bash
+aws lambda add-permission --function-name netflix-mirror-process-picture \
+  --statement-id s3invoke --action lambda:InvokeFunction \
+  --principal s3.amazonaws.com \
+  --source-arn arn:aws:s3:::$BUCKET --source-account <ACCOUNT_ID>
+```
+
+`s3-notification.json`:
+
+```json
+{
+  "LambdaFunctionConfigurations": [
+    {
+      "LambdaFunctionArn": "arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:netflix-mirror-process-picture",
+      "Events": ["s3:ObjectCreated:*"],
+      "Filter": {
+        "Key": { "FilterRules": [{ "Name": "prefix", "Value": "uploads/" }] }
+      }
+    }
+  ]
+}
+```
+
+```bash
+aws s3api put-bucket-notification-configuration --bucket $BUCKET \
+  --notification-configuration file://s3-notification.json
+```
+
+### 4.6 Connect ECR scan results → Lambda (alerts)
+
+`ecr-scan-pattern.json`:
+
+```json
+{
+  "source": ["aws.ecr"],
+  "detail-type": ["ECR Image Scan"],
+  "detail": { "repository-name": ["netflix-mirror"] }
+}
+```
+
+```bash
+aws events put-rule --name netflix-mirror-ecr-scan --event-pattern file://ecr-scan-pattern.json
+
+aws lambda add-permission --function-name netflix-mirror-ecr-scan-alert \
+  --statement-id eventbridge --action lambda:InvokeFunction \
+  --principal events.amazonaws.com \
+  --source-arn arn:aws:events:us-east-1:<ACCOUNT_ID>:rule/netflix-mirror-ecr-scan
+
+aws events put-targets --rule netflix-mirror-ecr-scan \
+  --targets "Id"="1","Arn"="arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:netflix-mirror-ecr-scan-alert"
+```
+
+### 4.7 API Gateway (HTTP API with Cognito JWT authorizer)
+
+```bash
+API_ID=$(aws apigatewayv2 create-api --name netflix-mirror-api --protocol-type HTTP \
+  --cors-configuration AllowOrigins=https://<your-app-domain>,http://localhost:3000,AllowMethods=GET,POST,OPTIONS,AllowHeaders=authorization,content-type \
+  --query ApiId --output text)
+
+AUTH_ID=$(aws apigatewayv2 create-authorizer --api-id $API_ID --name cognito \
+  --authorizer-type JWT --identity-source '$request.header.Authorization' \
+  --jwt-configuration Audience=<APP_CLIENT_ID>,Issuer=https://cognito-idp.us-east-1.amazonaws.com/<USER_POOL_ID> \
+  --query AuthorizerId --output text)
+
+INT_ID=$(aws apigatewayv2 create-integration --api-id $API_ID --integration-type AWS_PROXY \
+  --integration-uri arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:netflix-mirror-profile-api \
+  --payload-format-version 2.0 --query IntegrationId --output text)
+
+for ROUTE in "POST /profile/picture/upload-url" "GET /profile/picture"; do
+  aws apigatewayv2 create-route --api-id $API_ID --route-key "$ROUTE" \
+    --target integrations/$INT_ID --authorization-type JWT --authorizer-id $AUTH_ID
+done
+
+aws apigatewayv2 create-stage --api-id $API_ID --stage-name '$default' --auto-deploy
+
+aws lambda add-permission --function-name netflix-mirror-profile-api \
+  --statement-id apigw --action lambda:InvokeFunction --principal apigateway.amazonaws.com \
+  --source-arn "arn:aws:execute-api:us-east-1:<ACCOUNT_ID>:$API_ID/*/*"
+```
+
+The API URL is `https://<API_ID>.execute-api.us-east-1.amazonaws.com`; save it as the `API_URL` CI variable.
+
+### 4.8 Frontend upload example
+
+```js
+const API = process.env.REACT_APP_API_URL; // however your bundler exposes API_URL
+
+export async function uploadAvatar(file, token) {
+  const res = await fetch(`${API}/profile/picture/upload-url`, {
+    method: "POST",
+    headers: { Authorization: token, "Content-Type": "application/json" },
+    body: JSON.stringify({ contentType: file.type }),
+  });
+  const { url, fields } = await res.json();
+
+  const form = new FormData();
+  Object.entries(fields).forEach(([k, v]) => form.append(k, v));
+  form.append("file", file); // must be the last field
+
+  const upload = await fetch(url, { method: "POST", body: form });
+  if (!upload.ok) throw new Error("Upload failed");
 }
 
-
-If you get docker login failed errorr
-
-sudo su
-sudo usermod -aG docker jenkins
-sudo systemctl restart jenkins
-
-
+export async function getAvatarUrl(token) {
+  const res = await fetch(`${API}/profile/picture`, {
+    headers: { Authorization: token },
+  });
+  return (await res.json()).url; // null if the user has no picture yet
+}
 ```
 
-**Phase 4: Monitoring**
+The processed picture appears a second or two after the upload finishes, so fetch the URL after a short delay or retry once.
 
-1. **Install Prometheus and Grafana:**
+---
 
-   Set up Prometheus and Grafana to monitor your application.
+## Phase 5: Monitoring and notifications
 
-   **Installing Prometheus:**
-
-   First, create a dedicated Linux user for Prometheus and download Prometheus:
-
-   ```bash
-   sudo useradd --system --no-create-home --shell /bin/false prometheus
-   wget https://github.com/prometheus/prometheus/releases/download/v2.47.1/prometheus-2.47.1.linux-amd64.tar.gz
-   ```
-
-   Extract Prometheus files, move them, and create directories:
-
-   ```bash
-   tar -xvf prometheus-2.47.1.linux-amd64.tar.gz
-   cd prometheus-2.47.1.linux-amd64/
-   sudo mkdir -p /data /etc/prometheus
-   sudo mv prometheus promtool /usr/local/bin/
-   sudo mv consoles/ console_libraries/ /etc/prometheus/
-   sudo mv prometheus.yml /etc/prometheus/prometheus.yml
-   ```
-
-   Set ownership for directories:
-
-   ```bash
-   sudo chown -R prometheus:prometheus /etc/prometheus/ /data/
-   ```
-
-   Create a systemd unit configuration file for Prometheus:
-
-   ```bash
-   sudo nano /etc/systemd/system/prometheus.service
-   ```
-
-   Add the following content to the `prometheus.service` file:
-
-   ```plaintext
-   [Unit]
-   Description=Prometheus
-   Wants=network-online.target
-   After=network-online.target
-
-   StartLimitIntervalSec=500
-   StartLimitBurst=5
-
-   [Service]
-   User=prometheus
-   Group=prometheus
-   Type=simple
-   Restart=on-failure
-   RestartSec=5s
-   ExecStart=/usr/local/bin/prometheus \
-     --config.file=/etc/prometheus/prometheus.yml \
-     --storage.tsdb.path=/data \
-     --web.console.templates=/etc/prometheus/consoles \
-     --web.console.libraries=/etc/prometheus/console_libraries \
-     --web.listen-address=0.0.0.0:9090 \
-     --web.enable-lifecycle
-
-   [Install]
-   WantedBy=multi-user.target
-   ```
-
-   Here's a brief explanation of the key parts in this `prometheus.service` file:
-
-   - `User` and `Group` specify the Linux user and group under which Prometheus will run.
-
-   - `ExecStart` is where you specify the Prometheus binary path, the location of the configuration file (`prometheus.yml`), the storage directory, and other settings.
-
-   - `web.listen-address` configures Prometheus to listen on all network interfaces on port 9090.
-
-   - `web.enable-lifecycle` allows for management of Prometheus through API calls.
-
-   Enable and start Prometheus:
-
-   ```bash
-   sudo systemctl enable prometheus
-   sudo systemctl start prometheus
-   ```
-
-   Verify Prometheus's status:
-
-   ```bash
-   sudo systemctl status prometheus
-   ```
-
-   You can access Prometheus in a web browser using your server's IP and port 9090:
-
-   `http://<your-server-ip>:9090`
-
-   **Installing Node Exporter:**
-
-   Create a system user for Node Exporter and download Node Exporter:
-
-   ```bash
-   sudo useradd --system --no-create-home --shell /bin/false node_exporter
-   wget https://github.com/prometheus/node_exporter/releases/download/v1.6.1/node_exporter-1.6.1.linux-amd64.tar.gz
-   ```
-
-   Extract Node Exporter files, move the binary, and clean up:
-
-   ```bash
-   tar -xvf node_exporter-1.6.1.linux-amd64.tar.gz
-   sudo mv node_exporter-1.6.1.linux-amd64/node_exporter /usr/local/bin/
-   rm -rf node_exporter*
-   ```
-
-   Create a systemd unit configuration file for Node Exporter:
-
-   ```bash
-   sudo nano /etc/systemd/system/node_exporter.service
-   ```
-
-   Add the following content to the `node_exporter.service` file:
-
-   ```plaintext
-   [Unit]
-   Description=Node Exporter
-   Wants=network-online.target
-   After=network-online.target
-
-   StartLimitIntervalSec=500
-   StartLimitBurst=5
-
-   [Service]
-   User=node_exporter
-   Group=node_exporter
-   Type=simple
-   Restart=on-failure
-   RestartSec=5s
-   ExecStart=/usr/local/bin/node_exporter --collector.logind
-
-   [Install]
-   WantedBy=multi-user.target
-   ```
-
-   Replace `--collector.logind` with any additional flags as needed.
-
-   Enable and start Node Exporter:
-
-   ```bash
-   sudo systemctl enable node_exporter
-   sudo systemctl start node_exporter
-   ```
-
-   Verify the Node Exporter's status:
-
-   ```bash
-   sudo systemctl status node_exporter
-   ```
-
-   You can access Node Exporter metrics in Prometheus.
-
-2. **Configure Prometheus Plugin Integration:**
-
-   Integrate Jenkins with Prometheus to monitor the CI/CD pipeline.
-
-   **Prometheus Configuration:**
-
-   To configure Prometheus to scrape metrics from Node Exporter and Jenkins, you need to modify the `prometheus.yml` file. Here is an example `prometheus.yml` configuration for your setup:
-
-   ```yaml
-   global:
-     scrape_interval: 15s
-
-   scrape_configs:
-     - job_name: 'node_exporter'
-       static_configs:
-         - targets: ['localhost:9100']
-
-     - job_name: 'jenkins'
-       metrics_path: '/prometheus'
-       static_configs:
-         - targets: ['<your-jenkins-ip>:<your-jenkins-port>']
-   ```
-
-   Make sure to replace `<your-jenkins-ip>` and `<your-jenkins-port>` with the appropriate values for your Jenkins setup.
-
-   Check the validity of the configuration file:
-
-   ```bash
-   promtool check config /etc/prometheus/prometheus.yml
-   ```
-
-   Reload the Prometheus configuration without restarting:
-
-   ```bash
-   curl -X POST http://localhost:9090/-/reload
-   ```
-
-   You can access Prometheus targets at:
-
-   `http://<your-prometheus-ip>:9090/targets`
-
-
-####Grafana
-
-**Install Grafana on Ubuntu 22.04 and Set it up to Work with Prometheus**
-
-**Step 1: Install Dependencies:**
-
-First, ensure that all necessary dependencies are installed:
+### Install Prometheus
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y apt-transport-https software-properties-common
+sudo useradd --system --no-create-home --shell /sbin/nologin prometheus
+wget https://github.com/prometheus/prometheus/releases/download/v2.47.1/prometheus-2.47.1.linux-amd64.tar.gz
+tar -xvf prometheus-2.47.1.linux-amd64.tar.gz
+cd prometheus-2.47.1.linux-amd64/
+sudo mkdir -p /data /etc/prometheus
+sudo mv prometheus promtool /usr/local/bin/
+sudo mv prometheus.yml /etc/prometheus/prometheus.yml
+sudo chown -R prometheus:prometheus /etc/prometheus/ /data/
 ```
 
-**Step 2: Add the GPG Key:**
+> Use the latest stable release from the Prometheus releases page if you prefer.
 
-Add the GPG key for Grafana:
+`sudo nano /etc/systemd/system/prometheus.service`:
+
+```ini
+[Unit]
+Description=Prometheus
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=prometheus
+Group=prometheus
+Type=simple
+Restart=on-failure
+RestartSec=5s
+ExecStart=/usr/local/bin/prometheus \
+  --config.file=/etc/prometheus/prometheus.yml \
+  --storage.tsdb.path=/data \
+  --web.listen-address=0.0.0.0:9090 \
+  --web.enable-lifecycle
+
+[Install]
+WantedBy=multi-user.target
+```
 
 ```bash
-wget -q -O - https://packages.grafana.com/gpg.key | sudo apt-key add -
+sudo systemctl daemon-reload
+sudo systemctl enable --now prometheus
+sudo systemctl status prometheus
 ```
 
-**Step 3: Add Grafana Repository:**
+Open `http://<your-server-ip>:9090`.
 
-Add the repository for Grafana stable releases:
+### Install Node Exporter
 
 ```bash
-echo "deb https://packages.grafana.com/oss/deb stable main" | sudo tee -a /etc/apt/sources.list.d/grafana.list
+sudo useradd --system --no-create-home --shell /sbin/nologin node_exporter
+wget https://github.com/prometheus/node_exporter/releases/download/v1.6.1/node_exporter-1.6.1.linux-amd64.tar.gz
+tar -xvf node_exporter-1.6.1.linux-amd64.tar.gz
+sudo mv node_exporter-1.6.1.linux-amd64/node_exporter /usr/local/bin/
+rm -rf node_exporter*
 ```
 
-**Step 4: Update and Install Grafana:**
+`sudo nano /etc/systemd/system/node_exporter.service`:
 
-Update the package list and install Grafana:
+```ini
+[Unit]
+Description=Node Exporter
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=node_exporter
+Group=node_exporter
+Type=simple
+Restart=on-failure
+RestartSec=5s
+ExecStart=/usr/local/bin/node_exporter
+
+[Install]
+WantedBy=multi-user.target
+```
 
 ```bash
-sudo apt-get update
-sudo apt-get -y install grafana
+sudo systemctl daemon-reload
+sudo systemctl enable --now node_exporter
 ```
 
-**Step 5: Enable and Start Grafana Service:**
+### Configure Prometheus targets
 
-To automatically start Grafana after a reboot, enable the service:
+`/etc/prometheus/prometheus.yml`:
 
-```bash
-sudo systemctl enable grafana-server
-```
+```yaml
+global:
+  scrape_interval: 15s
 
-Then, start Grafana:
-
-```bash
-sudo systemctl start grafana-server
-```
-
-**Step 6: Check Grafana Status:**
-
-Verify the status of the Grafana service to ensure it's running correctly:
-
-```bash
-sudo systemctl status grafana-server
-```
-
-**Step 7: Access Grafana Web Interface:**
-
-Open a web browser and navigate to Grafana using your server's IP address. The default port for Grafana is 3000. For example:
-
-`http://<your-server-ip>:3000`
-
-You'll be prompted to log in to Grafana. The default username is "admin," and the default password is also "admin."
-
-**Step 8: Change the Default Password:**
-
-When you log in for the first time, Grafana will prompt you to change the default password for security reasons. Follow the prompts to set a new password.
-
-**Step 9: Add Prometheus Data Source:**
-
-To visualize metrics, you need to add a data source. Follow these steps:
-
-- Click on the gear icon (⚙️) in the left sidebar to open the "Configuration" menu.
-
-- Select "Data Sources."
-
-- Click on the "Add data source" button.
-
-- Choose "Prometheus" as the data source type.
-
-- In the "HTTP" section:
-  - Set the "URL" to `http://localhost:9090` (assuming Prometheus is running on the same server).
-  - Click the "Save & Test" button to ensure the data source is working.
-
-**Step 10: Import a Dashboard:**
-
-To make it easier to view metrics, you can import a pre-configured dashboard. Follow these steps:
-
-- Click on the "+" (plus) icon in the left sidebar to open the "Create" menu.
-
-- Select "Dashboard."
-
-- Click on the "Import" dashboard option.
-
-- Enter the dashboard code you want to import (e.g., code 1860).
-
-- Click the "Load" button.
-
-- Select the data source you added (Prometheus) from the dropdown.
-
-- Click on the "Import" button.
-
-You should now have a Grafana dashboard set up to visualize metrics from Prometheus.
-
-Grafana is a powerful tool for creating visualizations and dashboards, and you can further customize it to suit your specific monitoring needs.
-
-That's it! You've successfully installed and set up Grafana to work with Prometheus for monitoring and visualization.
-
-2. **Configure Prometheus Plugin Integration:**
-    - Integrate Jenkins with Prometheus to monitor the CI/CD pipeline.
-
-
-**Phase 5: Notification**
-
-1. **Implement Notification Services:**
-    - Set up email notifications in Jenkins or other notification mechanisms.
-
-# Phase 6: Kubernetes
-
-## Create Kubernetes Cluster with Nodegroups
-
-In this phase, you'll set up a Kubernetes cluster with node groups. This will provide a scalable environment to deploy and manage your applications.
-
-## Monitor Kubernetes with Prometheus
-
-Prometheus is a powerful monitoring and alerting toolkit, and you'll use it to monitor your Kubernetes cluster. Additionally, you'll install the node exporter using Helm to collect metrics from your cluster nodes.
-
-### Install Node Exporter using Helm
-
-To begin monitoring your Kubernetes cluster, you'll install the Prometheus Node Exporter. This component allows you to collect system-level metrics from your cluster nodes. Here are the steps to install the Node Exporter using Helm:
-
-1. Add the Prometheus Community Helm repository:
-
-    ```bash
-    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-    ```
-
-2. Create a Kubernetes namespace for the Node Exporter:
-
-    ```bash
-    kubectl create namespace prometheus-node-exporter
-    ```
-
-3. Install the Node Exporter using Helm:
-
-    ```bash
-    helm install prometheus-node-exporter prometheus-community/prometheus-node-exporter --namespace prometheus-node-exporter
-    ```
-
-Add a Job to Scrape Metrics on nodeip:9001/metrics in prometheus.yml:
-
-Update your Prometheus configuration (prometheus.yml) to add a new job for scraping metrics from nodeip:9001/metrics. You can do this by adding the following configuration to your prometheus.yml file:
-
-
-```
-  - job_name: 'Netflix'
-    metrics_path: '/metrics'
+scrape_configs:
+  - job_name: "prometheus"
     static_configs:
-      - targets: ['node1Ip:9100']
+      - targets: ["localhost:9090"]
+
+  - job_name: "node_exporter"
+    static_configs:
+      - targets: ["localhost:9100"]
+
+  - job_name: "gitlab-runner"
+    static_configs:
+      - targets: ["localhost:9252"]
 ```
 
-Replace 'your-job-name' with a descriptive name for your job. The static_configs section specifies the targets to scrape metrics from, and in this case, it's set to nodeip:9001.
+```bash
+promtool check config /etc/prometheus/prometheus.yml
+curl -X POST http://localhost:9090/-/reload
+```
 
-Don't forget to reload or restart Prometheus to apply these changes to your configuration.
+Check `http://<your-prometheus-ip>:9090/targets`; every job should be **UP**.
 
-To deploy an application with ArgoCD, you can follow these steps, which I'll outline in Markdown format:
+### Install Grafana (Amazon Linux 2023)
 
-### Deploy Application with ArgoCD
+```bash
+sudo tee /etc/yum.repos.d/grafana.repo > /dev/null << 'REPO'
+[grafana]
+name=grafana
+baseurl=https://rpm.grafana.com
+repo_gpgcheck=1
+enabled=1
+gpgcheck=1
+gpgkey=https://rpm.grafana.com/gpg.key
+sslverify=1
+sslcacert=/etc/pki/tls/certs/ca-bundle.crt
+REPO
 
-1. **Install ArgoCD:**
+sudo dnf install -y grafana
+sudo systemctl enable --now grafana-server
+```
 
-   You can install ArgoCD on your Kubernetes cluster by following the instructions provided in the [EKS Workshop](https://archive.eksworkshop.com/intermediate/290_argocd/install/) documentation.
+Open `http://<your-server-ip>:3000` (default `admin` / `admin`; change the password on first login).
 
-2. **Set Your GitHub Repository as a Source:**
+- **Connections → Data sources → Add data source → Prometheus**, URL `http://localhost:9090`, **Save & test**.
+- **Dashboards → New → Import**, ID `1860` (Node Exporter Full), pick the Prometheus data source.
 
-   After installing ArgoCD, you need to set up your GitHub repository as a source for your application deployment. This typically involves configuring the connection to your repository and defining the source for your ArgoCD application. The specific steps will depend on your setup and requirements.
+### Notifications (all go to the SNS topic)
 
-3. **Create an ArgoCD Application:**
-   - `name`: Set the name for your application.
-   - `destination`: Define the destination where your application should be deployed.
-   - `project`: Specify the project the application belongs to.
-   - `source`: Set the source of your application, including the GitHub repository URL, revision, and the path to the application within the repository.
-   - `syncPolicy`: Configure the sync policy, including automatic syncing, pruning, and self-healing.
+| Event                                                  | How it reaches SNS                                |
+| ------------------------------------------------------ | ------------------------------------------------- |
+| Pipeline fails                                         | `notify_failure` job in `.gitlab-ci.yml`          |
+| High/critical vulnerabilities in a pushed image        | ECR scan → EventBridge → `ecr-scan-alert` Lambda  |
+| High CPU / failed status check on the EC2 tools server | CloudWatch alarm with the SNS topic as its action |
 
-4. **Access your Application**
-   - To Access the app make sure port 30007 is open in your security group and then open a new tab paste your NodeIP:30007, your app should be running.
+Example CloudWatch alarm:
 
-**Phase 7: Cleanup**
+```bash
+aws cloudwatch put-metric-alarm --alarm-name netflix-mirror-tools-cpu \
+  --namespace AWS/EC2 --metric-name CPUUtilization \
+  --dimensions Name=InstanceId,Value=<instance-id> \
+  --statistic Average --period 300 --evaluation-periods 1 \
+  --threshold 80 --comparison-operator GreaterThanThreshold \
+  --alarm-actions arn:aws:sns:us-east-1:<ACCOUNT_ID>:netflix-mirror-alerts
+```
 
-1. **Cleanup AWS EC2 Instances:**
-    - Terminate AWS EC2 instances that are no longer needed.#   D e v S e c O p s - P r o j e c t  
- 
+---
+
+## Phase 6: Kubernetes on Amazon EKS
+
+Run these from AWS CloudShell or your workstation. Install the tools if needed:
+
+```bash
+curl -sL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz" | tar xz -C /tmp
+sudo mv /tmp/eksctl /usr/local/bin
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install -m 0755 kubectl /usr/local/bin/kubectl
+curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+```
+
+### Create the cluster with a managed node group
+
+```bash
+eksctl create cluster \
+  --name netflix-mirror-cluster \
+  --region us-east-1 \
+  --nodegroup-name netflix-mirror-nodes \
+  --node-type t3.medium \
+  --nodes 2 --nodes-min 2 --nodes-max 3 \
+  --managed
+
+kubectl get nodes
+```
+
+This creates the VPC, IAM roles, control plane, and node group. Nodes run Amazon Linux and their role can pull from ECR. Open **NodePort 30007** in the node security group (your IP only).
+
+### Monitor the cluster with Prometheus
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+kubectl create namespace prometheus-node-exporter
+helm install prometheus-node-exporter prometheus-community/prometheus-node-exporter \
+  --namespace prometheus-node-exporter
+```
+
+Node Exporter listens on port **9100** on each node. Add to `/etc/prometheus/prometheus.yml` on the tools server (allow the security group rule from Phase 0):
+
+```yaml
+- job_name: "netflix-mirror-eks"
+  metrics_path: "/metrics"
+  static_configs:
+    - targets: ["<node1-ip>:9100", "<node2-ip>:9100"]
+```
+
+```bash
+promtool check config /etc/prometheus/prometheus.yml
+curl -X POST http://localhost:9090/-/reload
+```
+
+### Deploy with ArgoCD
+
+**1. Install ArgoCD**
+
+```bash
+kubectl create namespace argocd
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo
+```
+
+Log in to the load balancer address as `admin`.
+
+**2. Connect your GitLab repository**
+
+**Settings → Repositories → Connect Repo** (HTTPS; use a GitLab deploy token with `read_repository` for private projects).
+
+**3. Create the application**
+
+```yaml
+# argocd-app.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: netflix-mirror
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.com/<your-group>/netflix-mirror.git
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+```
+
+```bash
+kubectl apply -f argocd-app.yaml
+```
+
+**4. Access the app:** `http://<node-public-ip>:30007`.
+
+For production, switch the Service to `type: LoadBalancer` (or an ALB Ingress) and put HTTPS in front of it.
+
+**End-to-end flow:** push to `main` → GitLab CI scans, builds, pushes to ECR (scan on push → alert Lambda if vulnerable) → manifest updated → ArgoCD rolls out to EKS.
+
+---
+
+## Phase 7: Cleanup
+
+Delete in this order to avoid orphaned load balancers and ongoing charges:
+
+```bash
+# 1. Kubernetes
+kubectl delete -f argocd-app.yaml
+kubectl delete svc argocd-server -n argocd
+eksctl delete cluster --name netflix-mirror-cluster --region us-east-1
+
+# 2. Serverless backend
+aws apigatewayv2 delete-api --api-id <API_ID>
+aws events remove-targets --rule netflix-mirror-ecr-scan --ids 1
+aws events delete-rule --name netflix-mirror-ecr-scan
+for fn in profile-api process-picture ecr-scan-alert; do
+  aws lambda delete-function --function-name netflix-mirror-$fn
+done
+aws cognito-idp delete-user-pool --user-pool-id <USER_POOL_ID>
+
+# 3. Storage and registry (S3 must be emptied first)
+aws s3 rm s3://$BUCKET --recursive
+aws s3api delete-bucket --bucket $BUCKET
+aws ecr delete-repository --repository-name netflix-mirror --force --region us-east-1
+
+# 4. Messaging and alarms
+aws sns delete-topic --topic-arn arn:aws:sns:us-east-1:<ACCOUNT_ID>:netflix-mirror-alerts
+aws cloudwatch delete-alarms --alarm-names netflix-mirror-tools-cpu
+```
+
+Then:
+
+- Unregister the runner in GitLab (**Settings → CI/CD → Runners**) and run `sudo gitlab-runner unregister --all-runners` on the server.
+- Terminate the tools EC2 instance and delete its volumes, Elastic IPs, and security groups.
+- Delete the IAM roles `netflix-mirror-tools-role` and `netflix-mirror-lambda-role` (detach policies first), plus the Lambda CloudWatch log groups (`/aws/lambda/netflix-mirror-*`).
+- Check **Billing → Cost Explorer** the next day to confirm nothing is still running.
