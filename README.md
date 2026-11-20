@@ -53,26 +53,6 @@ Browser ─► Cognito (login) ─► API Gateway (JWT authorizer) ─► Lambda
 
 ---
 
-## Why IAM roles?
-
-Every AWS call needs credentials. There are two ways to give them to a server or function:
-
-|             | IAM user + access keys                                                           | **IAM role** (used here)                                               |
-| ----------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Credentials | Long-lived `AKIA...` key pair you must store somewhere (GitLab variables, files) | Temporary credentials issued automatically and rotated every few hours |
-| If leaked   | Works until you notice and delete it                                             | Expires on its own and only works from the resource it is attached to  |
-| Setup       | Create keys, copy them into CI variables, rotate manually                        | Attach once; the AWS CLI/SDK finds credentials automatically           |
-
-So in this project:
-
-- **EC2 instance role** (`netflix-mirror-tools-role`): the GitLab Runner pushes to ECR, publishes to SNS, and updates Lambda code without any AWS keys in GitLab.
-- **Lambda execution role** (`netflix-mirror-lambda-role`): required for every Lambda; it defines what the function may touch (this bucket, this topic) and nothing else.
-- **EKS cluster and node roles**: created by `eksctl`; they let EKS manage AWS resources and let nodes pull from ECR.
-
-Each role is scoped to least privilege. You could not skip roles for Lambda or EKS anyway; for the EC2 runner it is simply the safest option.
-
----
-
 ## Phase 0: AWS foundation
 
 Configure the AWS CLI on your workstation (`aws configure`), or use AWS CloudShell. Replace `us-east-1` and `<ACCOUNT_ID>` with your own.
